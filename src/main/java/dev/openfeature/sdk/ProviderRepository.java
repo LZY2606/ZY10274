@@ -1,0 +1,389 @@
+package dev.openfeature.sdk;
+
+import dev.openfeature.sdk.exceptions.GeneralError;
+import dev.openfeature.sdk.exceptions.OpenFeatureError;
+import dev.openfeature.sdk.internal.ConfigurableThreadFactory;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
+class ProviderRepository {
+
+    private final Map<String, FeatureProviderStateManager> stateManagers = new ConcurrentHashMap<>();
+    private final AtomicReference<FeatureProviderStateManager> defaultStateManger =
+            new AtomicReference<>(new FeatureProviderStateManager(new NoOpProvider()));
+    private final AtomicBoolean isShuttingDown = new AtomicBoolean(false);
+    private final ExecutorService taskExecutor =
+            Executors.newCachedThreadPool(new ConfigurableThreadFactory("openfeature-provider-thread", true));
+    private final Object registerStateManagerLock = new Object();
+    private final OpenFeatureAPI openFeatureAPI;
+
+    public ProviderRepository(OpenFeatureAPI openFeatureAPI) {
+        this.openFeatureAPI = openFeatureAPI;
+    }
+
+    FeatureProviderStateManager getFeatureProviderStateManager() {
+        return defaultStateManger.get();
+    }
+
+    FeatureProviderStateManager getFeatureProviderStateManager(String domain) {
+        if (domain == null) {
+            return defaultStateManger.get();
+        }
+        FeatureProviderStateManager fromMap = this.stateManagers.get(domain);
+        if (fromMap == null) {
+            return this.defaultStateManger.get();
+        } else {
+            return fromMap;
+        }
+    }
+
+    /**
+     * Return the default provider.
+     */
+    public FeatureProvider getProvider() {
+        return defaultStateManger.get().getProvider();
+    }
+
+    /**
+     * Fetch a provider for a domain. If not found, return the default.
+     *
+     * @param domain The domain to look for.
+     * @return A named {@link FeatureProvider}
+     */
+    public FeatureProvider getProvider(String domain) {
+        return getFeatureProviderStateManager(domain).getProvider();
+    }
+
+    public ProviderState getProviderState() {
+        return getFeatureProviderStateManager().getState();
+    }
+
+    public ProviderState getProviderState(FeatureProvider featureProvider) {
+        if (featureProvider instanceof FeatureProviderStateManager) {
+            return ((FeatureProviderStateManager) featureProvider).getState();
+        }
+
+        FeatureProviderStateManager defaultProvider = this.defaultStateManger.get();
+        if (defaultProvider.hasSameProvider(featureProvider)) {
+            return defaultProvider.getState();
+        }
+
+        for (FeatureProviderStateManager wrapper : stateManagers.values()) {
+            if (wrapper.hasSameProvider(featureProvider)) {
+                return wrapper.getState();
+            }
+        }
+        return null;
+    }
+
+    public ProviderState getProviderState(String domain) {
+        return Optional.ofNullable(domain)
+                .map(this.stateManagers::get)
+                .orElse(this.defaultStateManger.get())
+                .getState();
+    }
+
+    public List<String> getDomainsForProvider(FeatureProvider provider) {
+        return stateManagers.entrySet().stream()
+                .filter(entry -> entry.getValue().hasSameProvider(provider))
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toList());
+    }
+
+    public Set<String> getAllBoundDomains() {
+        return stateManagers.keySet();
+    }
+
+    public boolean isDefaultProvider(FeatureProvider provider) {
+        return this.getProvider().equals(provider);
+    }
+
+    /**
+     * Set the default provider.
+     */
+    public void setProvider(
+            FeatureProvider provider,
+            Consumer<FeatureProvider> afterSet,
+            Consumer<FeatureProvider> afterInit,
+            Consumer<FeatureProvider> afterShutdown,
+            BiConsumer<FeatureProvider, OpenFeatureError> afterError,
+            boolean waitForInit) {
+        if (provider == null) {
+            throw new IllegalArgumentException("Provider cannot be null");
+        }
+        prepareAndInitializeProvider(null, provider, afterSet, afterInit, afterShutdown, afterError, waitForInit);
+    }
+
+    /**
+     * Add a provider for a domain.
+     *
+     * @param domain      The domain to bind the provider to.
+     * @param provider    The provider to set.
+     * @param waitForInit When true, wait for initialization to finish, then returns.
+     *                    Otherwise, initialization happens in the background.
+     */
+    public void setProvider(
+            String domain,
+            FeatureProvider provider,
+            Consumer<FeatureProvider> afterSet,
+            Consumer<FeatureProvider> afterInit,
+            Consumer<FeatureProvider> afterShutdown,
+            BiConsumer<FeatureProvider, OpenFeatureError> afterError,
+            boolean waitForInit) {
+        if (provider == null) {
+            throw new IllegalArgumentException("Provider cannot be null");
+        }
+        if (domain == null) {
+            throw new IllegalArgumentException("domain cannot be null");
+        }
+        prepareAndInitializeProvider(domain, provider, afterSet, afterInit, afterShutdown, afterError, waitForInit);
+    }
+
+    private void prepareAndInitializeProvider(
+            String domain,
+            FeatureProvider newProvider,
+            Consumer<FeatureProvider> afterSet,
+            Consumer<FeatureProvider> afterInit,
+            Consumer<FeatureProvider> afterShutdown,
+            BiConsumer<FeatureProvider, OpenFeatureError> afterError,
+            boolean waitForInit) {
+        final FeatureProviderStateManager newStateManager;
+        final FeatureProviderStateManager oldStateManager;
+
+        synchronized (registerStateManagerLock) {
+            if (isShuttingDown.get()) {
+                throw new IllegalStateException("Provider cannot be set while repository is shutting down");
+            }
+            FeatureProviderStateManager existing = getExistingStateManagerForProvider(newProvider);
+            validateDomainScopedBinding(domain, newProvider);
+            if (existing == null) {
+                openFeatureAPI.registerGlobalProvider(newProvider);
+                newStateManager = new FeatureProviderStateManager(newProvider);
+                // only run afterSet if new provider is not already attached
+                afterSet.accept(newProvider);
+            } else {
+                newStateManager = existing;
+            }
+
+            // provider is set immediately, on this thread
+            oldStateManager = domain != null
+                    ? this.stateManagers.put(domain, newStateManager)
+                    : this.defaultStateManger.getAndSet(newStateManager);
+        }
+
+        if (waitForInit) {
+            initializeProvider(domain, newStateManager, afterInit, afterShutdown, afterError, oldStateManager);
+        } else {
+            taskExecutor.submit(() -> {
+                // initialization happens in a different thread if we're not waiting for it
+                initializeProvider(domain, newStateManager, afterInit, afterShutdown, afterError, oldStateManager);
+            });
+        }
+    }
+
+    private void validateDomainScopedBinding(String domain, FeatureProvider newProvider) {
+        if (!newProvider.isDomainScoped()) {
+            return;
+        }
+
+        // a re-set to the identical binding is always allowed (it's a no-op)
+        boolean alreadyBoundHere = domain == null
+                ? isDefaultProviderInstance(newProvider)
+                : getBoundDomainsForProviderInstance(newProvider).contains(domain);
+        if (alreadyBoundHere) {
+            return;
+        }
+
+        // any other existing binding means this instance would span more than one domain
+        if (isDefaultProviderInstance(newProvider)
+                || !getBoundDomainsForProviderInstance(newProvider).isEmpty()) {
+            throw new IllegalArgumentException("Domain-scoped provider cannot be bound to more than one domain");
+        }
+    }
+
+    private boolean isDefaultProviderInstance(FeatureProvider provider) {
+        return defaultStateManger.get().getProvider() == provider;
+    }
+
+    private List<String> getBoundDomainsForProviderInstance(FeatureProvider provider) {
+        return stateManagers.entrySet().stream()
+                .filter(entry -> entry.getValue().getProvider() == provider)
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toList());
+    }
+
+    private FeatureProviderStateManager getExistingStateManagerForProvider(FeatureProvider provider) {
+        for (FeatureProviderStateManager stateManager : stateManagers.values()) {
+            if (matchesProvider(stateManager.getProvider(), provider)) {
+                return stateManager;
+            }
+        }
+        FeatureProviderStateManager defaultFeatureProviderStateManager = defaultStateManger.get();
+        if (matchesProvider(defaultFeatureProviderStateManager.getProvider(), provider)) {
+            return defaultFeatureProviderStateManager;
+        }
+        return null;
+    }
+
+    private boolean matchesProvider(FeatureProvider registered, FeatureProvider candidate) {
+        if (candidate.isDomainScoped()) {
+            return registered == candidate;
+        }
+        return registered.equals(candidate);
+    }
+
+    private void initializeProvider(
+            String domain,
+            FeatureProviderStateManager newManager,
+            Consumer<FeatureProvider> afterInit,
+            Consumer<FeatureProvider> afterShutdown,
+            BiConsumer<FeatureProvider, OpenFeatureError> afterError,
+            FeatureProviderStateManager oldManager) {
+        try {
+            if (ProviderState.NOT_READY.equals(newManager.getState())) {
+                newManager.initialize(openFeatureAPI.getEvaluationContext(), domain);
+                afterInit.accept(newManager.getProvider());
+            }
+            shutDownOld(oldManager, afterShutdown);
+        } catch (OpenFeatureError e) {
+            log.error(
+                    "Exception when initializing feature provider {}",
+                    newManager.getProvider().getClass().getName(),
+                    e);
+            afterError.accept(newManager.getProvider(), e);
+        } catch (Exception e) {
+            log.error(
+                    "Exception when initializing feature provider {}",
+                    newManager.getProvider().getClass().getName(),
+                    e);
+            afterError.accept(newManager.getProvider(), new GeneralError(e));
+        }
+    }
+
+    private void shutDownOld(FeatureProviderStateManager oldManager, Consumer<FeatureProvider> afterShutdown) {
+        synchronized (registerStateManagerLock) {
+            if (oldManager != null && !isStateManagerRegistered(oldManager)) {
+                // spec 1.8.4: release the provider from the global registry
+                openFeatureAPI.deregisterGlobalProvider(oldManager.getProvider());
+                shutdownProvider(oldManager);
+                afterShutdown.accept(oldManager.getProvider());
+            }
+        }
+    }
+
+    /**
+     * Helper to check if manager is already known (registered).
+     *
+     * @param manager manager to check for registration
+     * @return boolean true if already registered, false otherwise
+     */
+    private boolean isStateManagerRegistered(FeatureProviderStateManager manager) {
+        return manager != null
+                && (this.stateManagers.containsValue(manager)
+                        || this.defaultStateManger.get().equals(manager));
+    }
+
+    private void shutdownProvider(FeatureProviderStateManager manager) {
+        if (manager == null) {
+            return;
+        }
+        shutdownProvider(manager.getProvider());
+    }
+
+    private void shutdownProvider(FeatureProvider provider) {
+        try {
+            taskExecutor.submit(() -> {
+                try {
+                    provider.shutdown();
+                } catch (Exception e) {
+                    log.error(
+                            "Exception when shutting down feature provider {}",
+                            provider.getClass().getName(),
+                            e);
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            try {
+                provider.shutdown();
+            } catch (Exception ex) {
+                log.error(
+                        "Exception when shutting down feature provider {}",
+                        provider.getClass().getName(),
+                        ex);
+            }
+        }
+    }
+
+    /**
+     * Shuts down this repository which includes shutting down all FeatureProviders
+     * that are registered,
+     * including the default feature provider.
+     */
+    public void shutdown() {
+        List<FeatureProviderStateManager> managersToShutdown = prepareShutdown();
+        if (managersToShutdown != null) {
+            completeShutdown(managersToShutdown);
+        }
+    }
+
+    /**
+     * Prepares the repository for shutdown by marking it as shutting down and
+     * collecting all managers that need to be shut down.
+     *
+     * <p>After this call, any attempt to set a provider will throw IllegalStateException.
+     *
+     * @return list of managers to shut down, or null if shutdown was already initiated
+     */
+    List<FeatureProviderStateManager> prepareShutdown() {
+        synchronized (registerStateManagerLock) {
+            if (isShuttingDown.getAndSet(true)) {
+                return null;
+            }
+
+            List<FeatureProviderStateManager> managersToShutdown = Stream.concat(
+                            Stream.of(this.defaultStateManger.get()), this.stateManagers.values().stream())
+                    .distinct()
+                    .collect(Collectors.toList());
+            this.stateManagers.clear();
+            return managersToShutdown;
+        }
+    }
+
+    /**
+     * Completes the shutdown by shutting down all providers and waiting for
+     * pending tasks to complete.
+     *
+     * @param managersToShutdown the managers to shut down (from prepareShutdown)
+     */
+    void completeShutdown(List<FeatureProviderStateManager> managersToShutdown) {
+        managersToShutdown.forEach(m -> {
+            // spec 1.8.4: release all providers from the global registry on shutdown
+            openFeatureAPI.deregisterGlobalProvider(m.getProvider());
+            shutdownProvider(m);
+        });
+        taskExecutor.shutdown();
+        try {
+            if (!taskExecutor.awaitTermination(EventSupport.SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                log.warn("Task executor did not terminate before the timeout period had elapsed");
+                taskExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            taskExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
+}

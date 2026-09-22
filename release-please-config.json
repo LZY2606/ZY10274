@@ -1,0 +1,73 @@
+{
+  "bootstrap-sha": "d7b591c9f910afad303d6d814f65c7f9dab33b89",
+  "signoff": "OpenFeature Bot <109696520+openfeaturebot@users.noreply.github.com>",
+  "packages": {
+    ".": {
+      "package-name": "dev.openfeature.sdk",
+      "monorepo-tags": false,
+      "release-type": "simple",
+      "include-component-in-tag": false,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "versioning": "default",
+      "extra-files": [
+        "pom.xml",
+        "README.md"
+      ],
+      "changelog-sections": [
+        {
+          "type": "fix",
+          "section": "🐛 Bug Fixes"
+        },
+        {
+          "type": "feat",
+          "section": "✨ New Features"
+        },
+        {
+          "type": "chore",
+          "section": "🧹 Chore"
+        },
+        {
+          "type": "docs",
+          "section": "📚 Documentation"
+        },
+        {
+          "type": "perf",
+          "section": "🚀 Performance"
+        },
+        {
+          "type": "build",
+          "hidden": true,
+          "section": "🛠️ Build"
+        },
+        {
+          "type": "deps",
+          "section": "📦 Dependencies"
+        },
+        {
+          "type": "ci",
+          "hidden": true,
+          "section": "🚦 CI"
+        },
+        {
+          "type": "refactor",
+          "section": "🔄 Refactoring"
+        },
+        {
+          "type": "revert",
+          "section": "🔙 Reverts"
+        },
+        {
+          "type": "style",
+          "hidden": true,
+          "section": "🎨 Styling"
+        },
+        {
+          "type": "test",
+          "hidden": true,
+          "section": "🧪 Tests"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,331 @@
+package dev.openfeature.sdk;
+
+import static dev.openfeature.sdk.EvaluationContext.TARGETING_KEY;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
+class ImmutableContextTest {
+    @DisplayName("attributes unable to allow mutation should not affect the immutable context")
+    @Test
+    void shouldNotAttemptToModifyAttributesForImmutableContext() {
+        final Map<String, Value> attributes = new HashMap<>();
+        attributes.put("key1", new Value("val1"));
+        attributes.put("key2", new Value("val2"));
+        // should check the usage of Map.of() which is a more likely use case, but that API isn't available in Java 8
+        EvaluationContext ctx = new ImmutableContext("targeting key", Collections.unmodifiableMap(attributes));
+        attributes.put("key3", new Value("val3"));
+        assertArrayEquals(
+                new Object[] {"key1", "key2", TARGETING_KEY}, ctx.keySet().toArray());
+    }
+
+    @DisplayName("attributes mutation should not affect the immutable context")
+    @Test
+    void shouldCreateCopyOfAttributesForImmutableContext() {
+        HashMap<String, Value> attributes = new HashMap<>();
+        attributes.put("key1", new Value("val1"));
+        attributes.put("key2", new Value("val2"));
+        EvaluationContext ctx = new ImmutableContext("targeting key", attributes);
+        attributes.put("key3", new Value("val3"));
+        assertArrayEquals(
+                new Object[] {"key1", "key2", TARGETING_KEY}, ctx.keySet().toArray());
+    }
+
+    @DisplayName("targeting key should be changed from the overriding context")
+    @Test
+    void shouldChangeTargetingKeyFromOverridingContext() {
+        HashMap<String, Value> attributes = new HashMap<>();
+        attributes.put("key1", new Value("val1"));
+        attributes.put("key2", new Value("val2"));
+        EvaluationContext ctx = new ImmutableContext("targeting key", attributes);
+        EvaluationContext overriding = new ImmutableContext("overriding_key");
+        EvaluationContext merge = ctx.merge(overriding);
+        assertEquals("overriding_key", merge.getTargetingKey());
+    }
+
+    @DisplayName("targeting key should be changed from the overriding context even if empty string")
+    @Test
+    void shouldOverrideTargetingKeyWhenOverridingContextTargetingKeyIsEmptyString() {
+        HashMap<String, Value> attributes = new HashMap<>();
+        attributes.put("key1", new Value("val1"));
+        attributes.put("key2", new Value("val2"));
+        EvaluationContext ctx = new ImmutableContext("targeting_key", attributes);
+        EvaluationContext overriding = new ImmutableContext("");
+        EvaluationContext merge = ctx.merge(overriding);
+        // Empty string is a valid targeting key and should override
+        assertEquals("", merge.getTargetingKey());
+    }
+
+    @DisplayName("missing targeting key should return null")
+    @Test
+    void missingTargetingKeyShould() {
+        EvaluationContext ctx = new ImmutableContext();
+        assertNull(ctx.getTargetingKey());
+    }
+
+    @DisplayName("null targeting key in constructor should result in no targeting key")
+    @Test
+    void nullTargetingKeyInConstructorShouldResultInNoTargetingKey() {
+        EvaluationContext ctx = new ImmutableContext((String) null);
+        assertNull(ctx.getTargetingKey());
+    }
+
+    @DisplayName("empty string is a valid targeting key")
+    @Test
+    void emptyStringIsValidTargetingKey() {
+        EvaluationContext ctx = new ImmutableContext("");
+        assertEquals("", ctx.getTargetingKey());
+    }
+
+    @DisplayName("whitespace-only string is a valid targeting key")
+    @Test
+    void whitespaceOnlyStringIsValidTargetingKey() {
+        EvaluationContext ctx = new ImmutableContext("   ");
+        assertEquals("   ", ctx.getTargetingKey());
+    }
+
+    @DisplayName("Merge should retain all the attributes from the existing context when overriding context is null")
+    @Test
+    void mergeShouldReturnAllTheValuesFromTheContextWhenOverridingContextIsNull() {
+        HashMap<String, Value> attributes = new HashMap<>();
+        attributes.put("key1", new Value("val1"));
+        attributes.put("key2", new Value("val2"));
+        EvaluationContext ctx = new ImmutableContext("targeting_key", attributes);
+        EvaluationContext merge = ctx.merge(null);
+        assertEquals("targeting_key", merge.getTargetingKey());
+        assertArrayEquals(
+                new Object[] {"key1", "key2", TARGETING_KEY}, merge.keySet().toArray());
+    }
+
+    @DisplayName(
+            "Merge should retain subkeys from the existing context when the overriding context has the same targeting key")
+    @Test
+    void mergeShouldRetainItsSubkeysWhenOverridingContextHasTheSameKey() {
+        HashMap<String, Value> attributes = new HashMap<>();
+        HashMap<String, Value> overridingAttributes = new HashMap<>();
+        HashMap<String, Value> key1Attributes = new HashMap<>();
+        HashMap<String, Value> ovKey1Attributes = new HashMap<>();
+
+        key1Attributes.put("key1_1", new Value("val1_1"));
+        attributes.put("key1", new Value(new ImmutableStructure(key1Attributes)));
+        attributes.put("key2", new Value("val2"));
+        ovKey1Attributes.put("overriding_key1_1", new Value("overriding_val_1_1"));
+        overridingAttributes.put("key1", new Value(new ImmutableStructure(ovKey1Attributes)));
+
+        EvaluationContext ctx = new ImmutableContext("targeting_key", attributes);
+        EvaluationContext overriding = new ImmutableContext("targeting_key", overridingAttributes);
+        EvaluationContext merge = ctx.merge(overriding);
+        assertEquals("targeting_key", merge.getTargetingKey());
+        assertArrayEquals(
+                new Object[] {"key1", "key2", TARGETING_KEY}, merge.keySet().toArray());
+
+        Value key1 = merge.getValue("key1");
+        assertTrue(key1.isStructure());
+
+        Structure value = key1.asStructure();
+        assertArrayEquals(
+                new Object[] {"key1_1", "overriding_key1_1"}, value.keySet().toArray());
+    }
+
+    @DisplayName(
+            "Merge should retain subkeys from the existing context when the overriding context doesn't have targeting key")
+    @Test
+    void mergeShouldRetainItsSubkeysWhenOverridingContextHasNoTargetingKey() {
+        HashMap<String, Value> attributes = new HashMap<>();
+        HashMap<String, Value> key1Attributes = new HashMap<>();
+
+        key1Attributes.put("key1_1", new Value("val1_1"));
+        attributes.put("key1", new Value(new ImmutableStructure(key1Attributes)));
+        attributes.put("key2", new Value("val2"));
+
+        EvaluationContext ctx = new ImmutableContext(attributes);
+        EvaluationContext overriding = new ImmutableContext();
+        EvaluationContext merge = ctx.merge(overriding);
+        assertArrayEquals(new Object[] {"key1", "key2"}, merge.keySet().toArray());
+
+        Value key1 = merge.getValue("key1");
+        assertTrue(key1.isStructure());
+
+        Structure value = key1.asStructure();
+        assertArrayEquals(new Object[] {"key1_1"}, value.keySet().toArray());
+    }
+
+    @DisplayName("Merge should obtain keys from the overriding context when the existing context is empty")
+    @Test
+    void mergeShouldObtainKeysFromOverridingContextWhenExistingContextIsEmpty() {
+        HashMap<String, Value> attributes = new HashMap<>();
+        attributes.put("key1", new Value("val1"));
+        attributes.put("key2", new Value("val2"));
+
+        EvaluationContext ctx = new ImmutableContext();
+        EvaluationContext overriding = new ImmutableContext(attributes);
+        EvaluationContext merge = ctx.merge(overriding);
+        assertEquals(new HashSet<>(Arrays.asList("key1", "key2")), merge.keySet());
+    }
+
+    @DisplayName("Two ImmutableContext objects with identical attributes are considered equal")
+    @Test
+    void testImmutableContextEquality() {
+        Map<String, Value> map1 = new HashMap<>();
+        map1.put("key", new Value("value"));
+
+        Map<String, Value> map2 = new HashMap<>();
+        map2.put("key", new Value("value"));
+
+        ImmutableContext a = new ImmutableContext(null, map1);
+        ImmutableContext b = new ImmutableContext(null, map2);
+
+        assertEquals(a, b);
+        assertEquals(a.hashCode(), b.hashCode());
+    }
+
+    @DisplayName("Two different ImmutableContext objects with different contents are not considered equal")
+    @Test
+    void unequalImmutableContextsAreNotEqual() {
+        final Map<String, Value> attributes = new HashMap<>();
+        attributes.put("key1", new Value("val1"));
+        final ImmutableContext ctx = new ImmutableContext(attributes);
+
+        final Map<String, Value> attributes2 = new HashMap<>();
+        final ImmutableContext ctx2 = new ImmutableContext(attributes2);
+
+        assertNotEquals(ctx, ctx2);
+    }
+
+    @DisplayName("ImmutableContext hashCode is stable across multiple invocations")
+    @Test
+    void immutableContextHashCodeIsStable() {
+        Map<String, Value> map = new HashMap<>();
+        map.put("key", new Value("value"));
+
+        ImmutableContext ctx = new ImmutableContext(null, map);
+
+        int first = ctx.hashCode();
+        int second = ctx.hashCode();
+        assertEquals(first, second);
+    }
+
+    @Nested
+    @DisplayName("ImmutableContext(String, Map) branch logic")
+    class ConstructorBranches {
+
+        @Test
+        @DisplayName("non-null targeting key with empty attributes is preserved")
+        void nonNullTargetingKeyWithEmptyAttributesIsPreserved() {
+            ImmutableContext ctx = new ImmutableContext("key", Collections.emptyMap());
+            assertThat(ctx.getTargetingKey()).isEqualTo("key");
+            assertThat(ctx.keySet()).contains(TARGETING_KEY);
+        }
+
+        @Test
+        @DisplayName("non-null targeting key with null attributes is preserved")
+        void nonNullTargetingKeyWithNullAttributesIsPreserved() {
+            ImmutableContext ctx = new ImmutableContext("key", null);
+            assertThat(ctx.getTargetingKey()).isEqualTo("key");
+        }
+
+        @Test
+        @DisplayName("null targeting key with empty attributes yields empty context")
+        void nullTargetingKeyWithEmptyAttributesYieldsEmptyContext() {
+            ImmutableContext ctx = new ImmutableContext((String) null, Collections.emptyMap());
+            assertThat(ctx.getTargetingKey()).isNull();
+            assertThat(ctx.isEmpty()).isTrue();
+        }
+
+        @Test
+        @DisplayName("null targeting key with null attributes yields empty context")
+        void nullTargetingKeyWithNullAttributesYieldsEmptyContext() {
+            ImmutableContext ctx = new ImmutableContext((String) null, null);
+            assertThat(ctx.getTargetingKey()).isNull();
+            assertThat(ctx.isEmpty()).isTrue();
+        }
+    }
+
+    @Nested
+    @DisplayName("ImmutableContext.merge() empty short-circuit")
+    class MergeEmpty {
+
+        @Test
+        @DisplayName("merging two empty contexts returns the EMPTY singleton")
+        void mergingTwoEmptyContextsReturnsEmptySingleton() {
+            EvaluationContext result = new ImmutableContext().merge(new ImmutableContext());
+            assertThat(result).isSameAs(ImmutableContext.EMPTY);
+        }
+
+        @Test
+        @DisplayName("merging empty context with null returns the EMPTY singleton")
+        void mergingEmptyContextWithNullReturnsEmptySingleton() {
+            EvaluationContext result = new ImmutableContext().merge(null);
+            assertThat(result).isSameAs(ImmutableContext.EMPTY);
+        }
+
+        @Test
+        @DisplayName("merging non-empty context with null does not return EMPTY")
+        void mergingNonEmptyContextWithNullDoesNotReturnEmpty() {
+            EvaluationContext result = new ImmutableContext("key").merge(null);
+            assertThat(result).isNotSameAs(ImmutableContext.EMPTY);
+            assertThat(result.getTargetingKey()).isEqualTo("key");
+        }
+
+        @Test
+        @DisplayName("merging non-empty context with empty override does not return EMPTY")
+        void mergingNonEmptyContextWithEmptyOverrideDoesNotReturnEmpty() {
+            EvaluationContext result = new ImmutableContext("key").merge(new ImmutableContext());
+            assertThat(result).isNotSameAs(ImmutableContext.EMPTY);
+            assertThat(result.getTargetingKey()).isEqualTo("key");
+        }
+    }
+
+    @Nested
+    class Equals {
+        ImmutableContext ctx = new ImmutableContext("c", Map.of("a", new Value("b")));
+
+        @Test
+        void equalsItself() {
+            assertEquals(ctx, ctx);
+        }
+
+        @Test
+        void equalsLayeredEvalCtxIfSameValues() {
+            var layeredContext = new LayeredEvaluationContext(ctx, null, null, null);
+            assertEquals(layeredContext, ctx);
+            assertEquals(ctx, layeredContext);
+        }
+
+        @Test
+        void equalsDifferentMutableEvalCtxIfSameValues() {
+            var mutable = new MutableContext("c", Map.of("a", new Value("b")));
+            assertEquals(mutable, ctx);
+            assertEquals(ctx, mutable);
+        }
+    }
+
+    @Nested
+    class HashCode {
+        ImmutableContext ctx = new ImmutableContext("c", Map.of("a", new Value("b")));
+
+        @Test
+        void hashCodeEqualsLayeredEvalCtxIfSameValues() {
+            var layeredContext = new LayeredEvaluationContext(ctx, null, null, null);
+            assertEquals(layeredContext.hashCode(), ctx.hashCode());
+        }
+
+        @Test
+        void hashCodeEqualsDifferentMutableEvalCtxIfSameValues() {
+            var mutable = new MutableContext("c", Map.of("a", new Value("b")));
+            assertEquals(mutable.hashCode(), ctx.hashCode());
+        }
+    }
+}
