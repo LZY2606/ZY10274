@@ -12,6 +12,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.source>11</maven.compiler.source>
         <maven.compiler.target>${maven.compiler.source}</maven.compiler.target>
+        <lombok.version>1.18.48</lombok.version>
         <org.mockito.version>5.23.0</org.mockito.version>
         <com.vmlens.version>1.2.28</com.vmlens.version>
         <!-- exclusion expression for e2e tests -->
@@ -56,7 +57,7 @@
             <!-- compile-time annotation processor; not needed by consumers at runtime -->
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
-            <version>1.18.48</version>
+            <version>${lombok.version}</version>
             <scope>provided</scope>
             <optional>true</optional>
         </dependency>
@@ -299,6 +300,17 @@
             <plugin>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.16.0</version>
+                <configuration>
+                    <!-- lombok must be declared explicitly: recent JDKs no longer
+                         discover annotation processors from the classpath -->
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
             </plugin>
 
             <plugin>
