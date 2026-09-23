@@ -299,6 +299,10 @@
             <plugin>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.16.0</version>
+                <configuration>
+                    <!-- JDK 23+ disables classpath annotation processing by default; lombok requires it -->
+                    <proc>full</proc>
+                </configuration>
             </plugin>
 
             <plugin>

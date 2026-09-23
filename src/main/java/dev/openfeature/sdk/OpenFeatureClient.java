@@ -173,11 +173,13 @@ public class OpenFeatureClient implements Client {
 
         var hookHints = flagOptions.getHookHints();
         hookSupportData.hints = hookHints.isEmpty() ? Collections.emptyMap() : Collections.unmodifiableMap(hookHints);
+        // mutable contexts are copied at the call boundary so that mutations applied by the caller
+        // while the evaluation is in flight cannot leak into hooks or the provider
         var context = new LayeredEvaluationContext(
-                openfeatureApi.getEvaluationContext(),
-                openfeatureApi.getTransactionContext(),
-                evaluationContext.get(),
-                ctx);
+                snapshotIfMutable(openfeatureApi.getEvaluationContext()),
+                snapshotIfMutable(openfeatureApi.getTransactionContext()),
+                snapshotIfMutable(evaluationContext.get()),
+                snapshotIfMutable(ctx));
         hookSupportData.evaluationContext = context;
 
         try {
@@ -247,6 +249,13 @@ public class OpenFeatureClient implements Client {
     private static <T> void enrichDetailsWithErrorDefaults(T defaultValue, FlagEvaluationDetails<T> details) {
         details.setValue(defaultValue);
         details.setReason(Reason.ERROR.toString());
+    }
+
+    private static EvaluationContext snapshotIfMutable(EvaluationContext context) {
+        if (context instanceof MutableContext) {
+            return new ImmutableContext(context.getTargetingKey(), context.asUnmodifiableMap());
+        }
+        return context;
     }
 
     private static void validateTrackingEventName(String str) {
